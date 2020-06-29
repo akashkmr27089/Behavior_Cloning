@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 import time
+import numpy as np
 
 
 # %%
@@ -98,10 +99,23 @@ class Storage:
     def sample(self):
         return self.stack(self.states), self.stack(self.actions)
 
+def random_sample(indices, batch_size):
+    indices = np.asarray(np.random.permutation(indices))
+    batches = indices[:len(indices) // batch_size * batch_size].reshape(-1, batch_size)
+    for batch in batches:
+        yield batch
+    r = len(indices) % batch_size
+    if r:
+        yield indices[-r:]
+
 
 # %%
 max_len = 200
 initial_episode = 20
+lr = 0.0003             
+betas = (0.9, 0.999)
+batch_size = 128
+training_epoch = 1000
 initial_collection_visizliztion = False
 
 
@@ -123,15 +137,38 @@ for k in range(initial_episode):
     if initial_collection_visizliztion: env.close()
 
 
+# %%
 states, actions = storage.sample()
 behavior_cloniing = ActorCritic(state_dim, action_dim, 64).to(device)
 optimizer = torch.optim.Adam(behavior_cloniing.parameters(), lr=lr, betas=betas)
 # optimizer = torch.optim.SGD(behavior_cloniing.parameters(), lr = 0.01)
 MseLoss = nn.MSELoss()
 
-x_data = behavior_cloniing.action_layer(states)
-loss = MseLoss(x_data, actions)
-print(loss)
-optimizer.zero_grad()
-loss.backward()
-optimizer.step()
+
+# %%
+## Training Network for supervised network
+for i in range(training_epoch):
+    loss_sample = []
+    for sampled_set in random_sample(np.arange(states.size()[0]), batch_size):
+        y_pred = behavior_cloniing.action_layer(states[sampled_set])
+        y_actual = actions[sampled_set]
+        optimizer.zero_grad()
+        loss = MseLoss(y_pred, y_actual)
+        loss_sample.append(loss.data)
+        loss.backward()
+        optimizer.step()
+    if i%10 == 0:
+        print("Iteration {} with Current Loss :{}".format(i, sum(loss_sample)*(1/len(loss_sample))))
+
+
+# %%
+## This is only for testing if it works
+state = env.reset()
+while True:
+    action = behavior_cloniing.act(state)
+    env.render()
+    next_state, reward, done, _ = env.step(action)
+    state = next_state
+    time.sleep(0.01)
+    if done: break
+env.close()
